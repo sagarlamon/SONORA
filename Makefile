@@ -1,0 +1,426 @@
+CC ?= gcc
+CXX ?= g++
+PKG_CONFIG ?= pkg-config
+SYMBOLS ?= 0
+STRIP ?= 0
+
+# To enable debugging, run:
+# make DEBUG=1
+# To disable DBUS notifications, run:
+# make USE_DBUS=0
+# To disable faad2, run:
+# make USE_FAAD=0
+
+# Detect system and architecture
+UNAME_S := $(shell uname -s)
+ARCH := $(shell uname -m)
+
+# Set sonora version
+SONORA_VERSION ?= $(shell git describe --tags --dirty --always)
+
+  # Check if we're in Termux environment
+ifneq ($(wildcard /data/data/com.termux/files/usr),)
+  # Termux environment
+  IS_ANDROID := 1
+endif
+
+ifeq ($(SYMBOLS),1)
+    SYMBOL_FLAGS := -g
+else
+    SYMBOL_FLAGS :=
+endif
+
+# Default USE_DBUS to auto-detect if not set by user
+ifeq ($(origin USE_DBUS), undefined)
+  ifeq ($(UNAME_S), Darwin)
+    USE_DBUS = 0
+  else ifeq ($(IS_ANDROID),1)
+    USE_DBUS = 0
+  else ifneq ($(findstring MINGW,$(UNAME_S))$(findstring MSYS,$(UNAME_S)),)
+    USE_DBUS = 0
+  else
+    USE_DBUS = 1
+  endif
+endif
+
+# Default USE_MACOS_MEDIA to auto-detect if not set by user
+ifeq ($(origin USE_MACOS_MEDIA), undefined)
+  ifeq ($(UNAME_S), Darwin)
+    USE_MACOS_MEDIA = 1
+  else
+    USE_MACOS_MEDIA = 0
+  endif
+endif
+
+PREFIX    ?= /usr/local
+USE_DB    ?= 1
+
+ifeq ($(UNAME_S),Darwin)
+    ifeq ($(ARCH),arm64)
+        PKG_CONFIG_PATH := /opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig:$(PKG_CONFIG_PATH)
+    else
+        PKG_CONFIG_PATH := /usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:$(PKG_CONFIG_PATH)
+    endif
+
+    export PKG_CONFIG_PATH
+endif
+
+# Default USE_FAAD to auto-detect if not set by user
+ifeq ($(origin USE_FAAD), undefined)
+
+  # Try pkg-config first
+  ifneq ($(shell command -v $(PKG_CONFIG) 2>/dev/null),)
+    ifeq ($(shell $(PKG_CONFIG) --exists faad2 2>/dev/null && echo 1),1)
+      USE_FAAD := 1
+      FAAD_CFLAGS := $(shell $(PKG_CONFIG) --cflags faad2)
+      FAAD_LIBS   := $(shell $(PKG_CONFIG) --libs faad2)
+    endif
+  endif
+
+  ifeq ($(USE_FAAD),0)
+        # Check if we're in Termux environment
+        ifneq ($(wildcard /data/data/com.termux/files/usr),)
+                # Termux environment - check common installation paths
+                USE_FAAD = $(shell [ -f "$(PREFIX)/lib/libfaad.so" ] || \
+                       [ -f "$(PREFIX)/lib/libfaad2.so" ] || \
+                       [ -f "$(PREFIX)/local/lib/libfaad.so" ] || \
+                       [ -f "$(PREFIX)/local/lib/libfaad2.so" ] || \
+                       [ -f "/data/data/com.termux/files/usr/lib/libfaad.so" ] || \
+                       [ -f "/data/data/com.termux/files/usr/bin/faad" ] || \
+                       [ -f "/data/data/com.termux/files/usr/lib/libfaad2.so" ] || \
+                       [ -f "/data/data/com.termux/files/usr/local/lib/libfaad.so" ] || \
+                       [ -f "/data/data/com.termux/files/usr/local/lib/libfaad2.so" ] && echo 1 || echo 0)
+        else
+                # Try to find libfaad dynamically in common paths
+                USE_FAAD = $(shell [ -f /usr/lib/libfaad.so ] || [ -f /usr/lib64/libfaad.so ] || [ -f /usr/lib64/libfaad2.so ] || \
+                        [ -f /usr/bin/faad ] || [ -f /usr/local/lib/libfaad.so ] || \
+                        [ -f /opt/local/lib/libfaad.so ] || [ -f /opt/homebrew/lib/libfaad.dylib ] || \
+                        [ -f /opt/homebrew/opt/faad2/lib/libfaad.dylib ] || \
+                         [ -f /usr/local/lib/libfaad.dylib ] || [ -f /lib/x86_64-linux-gnu/libfaad.so.2 ] && echo 1 || echo 0)
+        endif
+  endif
+
+endif
+
+LOCAL_INC = \
+    -Isrc \
+    -Iinclude \
+    -Iinclude/compat \
+    -Iinclude/libmp4/src \
+    -Iinclude/libmp4/include \
+    -Iinclude/stb_image \
+    -Iinclude/miniaudio \
+    -Iinclude/nestegg
+
+ifeq ($(UNAME_S),Darwin)
+    PKG_LIBS = gio-2.0 chafa fftw3f opus opusfile vorbis vorbisfile ogg glib-2.0 taglib gdk-pixbuf-2.0
+else
+    PKG_LIBS = gio-2.0 chafa fftw3f opus opusfile vorbis vorbisfile ogg glib-2.0 taglib
+endif
+
+PKG_CFLAGS  = $(shell $(PKG_CONFIG) --cflags $(PKG_LIBS))
+PKG_LDFLAGS = $(shell $(PKG_CONFIG) --libs $(PKG_LIBS))
+
+COMMONFLAGS = $(LOCAL_INC) $(PKG_CFLAGS)
+COMMONFLAGS += -include include/compat/buildinfo.h
+COMMONFLAGS += -include compat_errno.h
+
+ifeq ($(DEBUG), 1)
+    SYMBOL_FLAGS := -g
+    COMMONFLAGS += $(SYMBOL_FLAGS) -DDEBUG -Wformat -ffunction-sections -fdata-sections -Werror=format-security
+else ifeq ($(DEBUG), 2)
+    SYMBOL_FLAGS := -g -O0
+    COMMONFLAGS += $(SYMBOL_FLAGS) -DDEBUG -Wformat -ffunction-sections -fdata-sections -Werror=format-security -fsanitize=address,undefined \
+          -fno-omit-frame-pointer \
+          -fno-optimize-sibling-calls
+    LDFLAGS += -fsanitize=address,undefined
+else
+    ifeq ($(IS_ANDROID), 1)
+        COMMONFLAGS += $(SYMBOL_FLAGS) -O2 -fstack-protector-strong -Wformat -ffunction-sections -fdata-sections -D_FORTIFY_SOURCE=2
+    else
+        COMMONFLAGS += $(SYMBOL_FLAGS) -O2 -fstack-protector-strong -Wformat -ffunction-sections -fdata-sections -Werror=format-security -D_FORTIFY_SOURCE=2
+    endif
+endif
+
+ifneq ($(strip $(SONORA_VERSION)),)
+    COMMONFLAGS += -DSONORA_VERSION_RAW=$(SONORA_VERSION)
+endif
+
+COMMONFLAGS += -Wall -Wextra -Wpointer-arith -D__USE_MINGW_ANSI_STDIO=1
+
+GC_SECTIONS_FLAG :=
+
+# Test linking a dummy program with --gc-sections
+ifeq ($(shell echo "int main(){}" | $(CC) -x c - -o /dev/null -Wl,--gc-sections >/dev/null 2>&1 && echo yes),yes)
+    GC_SECTIONS_FLAG := -Wl,--gc-sections
+endif
+
+LDFLAGS += $(GC_SECTIONS_FLAG)
+
+CFLAGS = $(COMMONFLAGS)
+
+# Compiler flags for C++ code
+CXXFLAGS = $(COMMONFLAGS) -std=gnu++20 -D_ISOC11_SOURCE
+
+# Libraries
+LIBS = -lm -lopusfile -lglib-2.0 -lpthread $(PKG_LDFLAGS)
+LIBS += -lstdc++
+
+LDFLAGS += -logg -lz
+
+ifeq ($(UNAME_S), Linux)
+  CFLAGS += -fPIE -fstack-clash-protection
+  CXXFLAGS += -fPIE -fstack-clash-protection
+  LDFLAGS += -pie -Wl,-z,relro -Wl,-z,now -fPIE
+  ifneq (,$(filter $(ARCH), x86_64 i386))
+        CFLAGS += -fcf-protection
+        CXXFLAGS += -fcf-protection
+  endif
+  ifeq ($(STRIP),1)
+        LDFLAGS += -s
+  endif
+else ifeq ($(UNAME_S), Darwin)
+  LIBS += -framework CoreAudio -framework CoreFoundation
+  ifeq ($(USE_MACOS_MEDIA), 1)
+    LIBS += -framework MediaPlayer -framework AppKit
+  endif
+else ifneq ($(findstring MINGW,$(UNAME_S))$(findstring MSYS,$(UNAME_S)),)
+  LIBS += -lws2_32 -lgnurx
+  WIN_MANIFEST_OBJ = manifest.res
+  WINDRES = windres
+endif
+
+# Conditionally add  USE_DBUS is enabled
+ifeq ($(USE_DBUS), 1)
+  DEFINES += -DUSE_DBUS
+endif
+
+# Conditionally add macOS media integration
+ifeq ($(USE_MACOS_MEDIA), 1)
+  DEFINES += -DUSE_MACOS_MEDIA
+endif
+
+DEFINES += -DPREFIX_RAW=$(PREFIX)
+
+# Conditionally add faad2 support if USE_FAAD is enabled
+ifeq ($(USE_FAAD), 1)
+  ifeq ($(ARCH), arm64)
+    CFLAGS += -I/opt/homebrew/opt/faad2/include
+    LIBS += -L/opt/homebrew/opt/faad2/lib -lfaad
+  else ifeq ($(UNAME_O),Android)
+    CFLAGS += -I$(PREFIX)/include
+    LIBS += -L$(PREFIX)/lib -lfaad
+  else
+    CFLAGS += -I/usr/local/include
+    LIBS += -L/usr/local/lib -lfaad
+  endif
+  DEFINES += -DUSE_FAAD
+endif
+
+ifeq ($(origin CC),default)
+    CC := gcc
+endif
+
+ifneq ($(findstring gcc,$(CC)),)
+    ifeq ($(UNAME_S), Linux)
+        LIBS += -latomic
+    endif
+endif
+
+OBJDIR = src/obj
+
+SRCS = src/common/appstate.c src/ui/common_ui.c src/common/common.c \
+       src/utils/utils.c src/utils/file.c src/utils/img_utils.c src/utils/term.c src/utils/k_log.c \
+       src/sound/sound_facade.c src/sound/sound.c src/sound/m4a.c src/sound/audiobuffer.c \
+       src/sound/decoders.c src/sound/audio_file_info.c src/sound/playback.c src/sound/volume.c \
+       src/sys/sys_integration.c src/sys/notifications.c src/sys/mpris.c src/sys/discord_rpc.c \
+       src/ops/playback_ops.c src/ops/playback_clock.c src/ops/search_ops.c  src/ops/playback_system.c \
+       src/ops/playlist_ops.c src/ops/library_ops.c src/ops/track_manager.c src/ops/playback_state.c \
+       src/ui/control_ui.c src/ui/components.c src/ui/input.c src/ui/playlist_ui.c src/ui/render_ui.c src/ui/render_terminal.c \
+       src/ui/visuals.c src/ui/chroma.c src/ui/queue_ui.c src/ui/settings.c src/ui/anims.c src/ui/cli.c \
+       src/update/messages.c src/update/update.c src/update/effects.c \
+       src/data/theme.c src/data/directorytree.c src/loader/lyrics.c src/data/img_func.c \
+       src/data/playlist.c src/data/cache.c src/data/artists.c src/loader/song_loader.c src/sonora.c
+
+# TagLib wrapper
+WRAPPER_SRC = src/loader/tagLibWrapper.cpp
+WRAPPER_OBJ = $(OBJDIR)/tagLibWrapper.o
+
+MAN_PAGE = sonora.1
+MAN_DIR ?= $(PREFIX)/share/man
+SONORA_DATADIR ?= $(PREFIX)/share
+LOCALEDIR ?= $(SONORA_DATADIR)/locale
+THEMEDIR = $(SONORA_DATADIR)/sonora/themes
+THEMESRCDIR := $(shell pwd)/themes
+LAYOUTDIR = $(SONORA_DATADIR)/sonora/layouts
+LAYOUTSRCDIR := $(shell pwd)/layouts
+
+DEFINES += -DLOCALEDIR_RAW=$(LOCALEDIR)
+
+CFLAGS += -DSONORA_DATADIR_RAW=$(SONORA_DATADIR)
+
+all: sonora
+
+# Generate object lists
+OBJS_C = $(SRCS:src/%.c=$(OBJDIR)/%.o)
+
+LIBMP4_SRCS = \
+    include/libmp4/src/mp4.c \
+    include/libmp4/src/mp4_box_reader.c \
+    include/libmp4/src/mp4_demux.c \
+    include/libmp4/src/mp4_track.c
+
+LIBMP4_OBJS = $(LIBMP4_SRCS:include/libmp4/src/%.c=$(OBJDIR)/libmp4/%.o)
+
+NESTEGG_SRCS = include/nestegg/nestegg.c
+NESTEGG_OBJS = $(NESTEGG_SRCS:include/nestegg/%.c=$(OBJDIR)/nestegg/%.o)
+
+# macOS Now Playing (Objective-C)
+ifeq ($(USE_MACOS_MEDIA), 1)
+  MACOS_MEDIA_SRC = src/sys/macos_nowplaying.m
+  MACOS_MEDIA_OBJ = $(MACOS_MEDIA_SRC:src/sys/%.m=$(OBJDIR)/sys/%.o)
+endif
+
+# All objects together
+OBJS = $(OBJS_C) $(NESTEGG_OBJS) $(LIBMP4_OBJS) $(MACOS_MEDIA_OBJ) $(WIN_MANIFEST_OBJ)
+
+# Create object directories
+$(OBJDIR):
+	mkdir -p $(OBJDIR)
+
+## Compile C sources
+$(OBJDIR)/%.o: src/%.c Makefile | $(OBJDIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(DEFINES) -c -o $@ $<
+
+# Compile Objective-C sources in src/ (macOS only)
+$(OBJDIR)/%.o: src/%.m Makefile | $(OBJDIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(DEFINES) -fobjc-arc -c -o $@ $<
+
+# Compile explicit C++ sources in src/
+$(OBJDIR)/%.o: src/%.cpp Makefile | $(OBJDIR)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(DEFINES) -c -o $@ $<
+
+# Compile TagLib wrapper C++ source
+$(WRAPPER_OBJ): $(WRAPPER_SRC) Makefile | $(OBJDIR)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(DEFINES) -c $< -o $@
+
+# Compile C files in include/nestegg
+$(OBJDIR)/nestegg/%.o: include/nestegg/%.c Makefile | $(OBJDIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(DEFINES) -c -o $@ $<
+
+# Compile LibMp4
+$(OBJDIR)/libmp4/%.o: include/libmp4/src/%.c Makefile | $(OBJDIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(DEFINES) -DMP4_API_EXPORTS -std=gnu99 -c -o $@ $<
+
+$(WIN_MANIFEST_OBJ): src/ui/manifest.rc src/ui/ms-utf8.xml sonora.ico src/ui/version.h
+	$(WINDRES) -Isrc/ui -Iinclude -I. src/ui/manifest.rc -O coff -o $@
+
+# Link all objects safely together using C++ linker
+sonora: $(OBJS) $(WRAPPER_OBJ) $(WIN_MANIFEST_OBJ) Makefile
+	$(CXX) -o sonora $(OBJS) $(WRAPPER_OBJ) $(LIBS) $(LDFLAGS)
+
+.PHONY: install
+install: all
+	# Create directories
+	mkdir -p "$(DESTDIR)$(MAN_DIR)/man1"
+	mkdir -p "$(DESTDIR)$(PREFIX)/bin"
+	mkdir -p "$(DESTDIR)$(THEMEDIR)"
+	mkdir -p "$(DESTDIR)$(LAYOUTDIR)"
+	mkdir -p "$(DESTDIR)$(LOCALEDIR)/ja/LC_MESSAGES"
+	mkdir -p "$(DESTDIR)$(LOCALEDIR)/zh_CN/LC_MESSAGES"
+	mkdir -p "$(DESTDIR)$(PREFIX)/share/applications"
+	mkdir -p "$(DESTDIR)$(PREFIX)/share/icons/hicolor/512x512/apps"
+
+	# Install binary and man page
+	install -m 0755 sonora "$(DESTDIR)$(PREFIX)/bin/sonora"
+	@if [ -f docs/sonora.1 ]; then \
+		install -m 0644 docs/sonora.1 "$(DESTDIR)$(MAN_DIR)/man1/sonora.1"; \
+	fi
+
+	# Install Chinese translation
+	@if [ -f locale/zh_CN/LC_MESSAGES/sonora.mo ]; then \
+		install -m 0644 locale/zh_CN/LC_MESSAGES/sonora.mo \
+			"$(DESTDIR)$(LOCALEDIR)/zh_CN/LC_MESSAGES/sonora.mo"; \
+	fi
+
+	# Install Japanese translation
+	@if [ -f locale/ja/LC_MESSAGES/sonora.mo ]; then \
+		install -m 0644 locale/ja/LC_MESSAGES/sonora.mo \
+			"$(DESTDIR)$(LOCALEDIR)/ja/LC_MESSAGES/sonora.mo"; \
+	fi
+
+ifeq ($(UNAME_S),Darwin)
+	@true
+else
+	# Install desktop shortcut
+	@if [ -f shortcut/sonora.desktop ]; then \
+		install -m644 shortcut/sonora.desktop \
+			"$(DESTDIR)$(PREFIX)/share/applications/sonora.desktop"; \
+	fi
+
+	# Install desktop icon
+	@if [ -f shortcut/sonora.png ]; then \
+		install -m644 shortcut/sonora.png \
+			"$(DESTDIR)$(PREFIX)/share/icons/hicolor/512x512/apps/sonora.png"; \
+	fi
+endif
+
+	@if [ -d "$(THEMESRCDIR)" ]; then \
+		for theme in "$(THEMESRCDIR)"/*.theme; do \
+			if [ -f "$$theme" ]; then \
+				install -m 0644 "$$theme" "$(DESTDIR)$(THEMEDIR)/"; \
+			fi; \
+		done; \
+		for theme in "$(THEMESRCDIR)"/*.txt; do \
+			if [ -f "$$theme" ]; then \
+				install -m 0644 "$$theme" "$(DESTDIR)$(THEMEDIR)/"; \
+			fi; \
+		done; \
+		for theme in "$(THEMESRCDIR)"/*.md; do \
+			if [ -f "$$theme" ]; then \
+				install -m 0644 "$$theme" "$(DESTDIR)$(THEMEDIR)/"; \
+			fi; \
+		done; \
+	fi
+
+	@if [ -d "$(LAYOUTSRCDIR)" ]; then \
+		for layout in "$(LAYOUTSRCDIR)"/*.layout; do \
+			if [ -f "$$layout" ]; then \
+				install -m 0644 "$$layout" "$(DESTDIR)$(LAYOUTDIR)/"; \
+			fi; \
+		done; \
+		for layout in "$(LAYOUTSRCDIR)"/*.md; do \
+			if [ -f "$$layout" ]; then \
+				install -m 0644 "$$layout" "$(DESTDIR)$(LAYOUTDIR)/"; \
+			fi; \
+		done; \
+	fi
+
+	@if [ "$$(uname)" = "Linux" ]; then \
+		if command -v setcap >/dev/null 2>&1; then \
+			setcap cap_sys_nice+ep "$(DESTDIR)$(PREFIX)/bin/sonora" || true; \
+		fi; \
+	fi
+
+.PHONY: uninstall
+uninstall:
+	rm -f "$(DESTDIR)$(PREFIX)/bin/sonora"
+	rm -f "$(DESTDIR)$(MAN_DIR)/man1/sonora.1"
+	rm -f "$(DESTDIR)$(SONORA_DATADIR)/sonora/artists.db"
+	rm -rf "$(DESTDIR)$(THEMEDIR)"
+	rm -rf "$(DESTDIR)$(LAYOUTDIR)"
+	rm -f "$(DESTDIR)$(LOCALEDIR)/ja/LC_MESSAGES/sonora.mo"
+	rm -f "$(DESTDIR)$(LOCALEDIR)/zh_CN/LC_MESSAGES/sonora.mo"
+	rm -f "$(DESTDIR)$(PREFIX)/share/icons/hicolor/512x512/apps/sonora.png"
+	rm -f "$(DESTDIR)$(PREFIX)/share/applications/sonora.desktop"
+.PHONY: clean
+clean:
+	rm -rf $(OBJDIR) sonora
+i18n:
+	$(MAKE) -f Makefile.i18n i18n

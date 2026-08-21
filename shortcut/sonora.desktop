@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=SONORA
+Comment=Command-line music player - MADE by SAGAR
+Exec=sonora
+Icon=sonora
+Terminal=true
+Type=Application
+Categories=AudioVideo;Player;Audio;
+Keywords=music;player;cli;terminal;audio;

@@ -1,0 +1,12 @@
+sonora themes pack 2.
+
+Included in this pack:
+
+neutral
+catpucchin
+
+To apply, run:
+
+sonora theme <theme> # filename without the .theme part
+
+Or cycle by pressing 't'.
