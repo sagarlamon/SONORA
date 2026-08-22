@@ -3,7 +3,7 @@
  */
 
 #ifndef SONORA_VERSION
-#define SONORA_VERSION "2.0.3"
+#define SONORA_VERSION "2.0.6"
 #endif
 
 #include "common/appstate.h"

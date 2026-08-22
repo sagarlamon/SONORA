@@ -274,4 +274,6 @@ int is_decoding_possible(const char *filepath, const CodecOps *ops);
 
 void *get_other_decoder(void);
 
+int calc_avg_bit_rate(double duration, const char *file_path);
+
 #endif

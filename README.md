@@ -65,7 +65,25 @@ SONORA operates on an **Instant-Search & Playlist Generation** workflow:
 
 ### 🐧 1. Linux Installation Guide
 
-#### Option A: Build from Source (Recommended)
+#### Option A: Quick Automated Script (Recommended)
+
+Run the interactive management script to automatically install dependencies, build, update, or clean reinstall:
+
+```bash
+# Clone repository
+git clone https://github.com/sagarlamon/SONORA.git
+cd SONORA
+
+# Run interactive installer/updater/clean-reinstaller
+./setup.sh
+
+# Or run direct commands:
+./setup.sh install           # Install dependencies, compile & install system-wide
+./setup.sh update            # Git pull, rebuild, and reinstall
+./setup.sh clean-reinstall    # Full clean, reinstall dependencies & rebuild
+```
+
+#### Option B: Build from Source Manually
 
 ##### Step 1: Install Dependencies
 

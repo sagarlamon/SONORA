@@ -21,6 +21,8 @@
 #include "common_ui.h"
 #include "settings.h"
 #include "sound/audiotypes.h"
+#include "sound/decoders.h"
+#include <ctype.h>
 
 #include "ui/playlist_ui.h"
 #include "ui/render_ui.h"
@@ -2232,11 +2234,53 @@ ComponentMsg component_volume(const Model *model, k_Rect region, DrawBuffer *buf
         return (ComponentMsg){0};
 }
 
+static void get_audio_format_str(const char *file_path, char *out_buf, size_t out_size)
+{
+        if (!file_path || out_size == 0)
+                return;
+        out_buf[0] = '\0';
+
+        const char *ext = strrchr(file_path, '.');
+        if (!ext)
+                return;
+
+        if (strcasecmp(ext, ".mp3") == 0) {
+                snprintf(out_buf, out_size, "MP3");
+        } else if (strcasecmp(ext, ".flac") == 0) {
+                snprintf(out_buf, out_size, "FLAC");
+        } else if (strcasecmp(ext, ".m4a") == 0) {
+                snprintf(out_buf, out_size, "M4A");
+        } else if (strcasecmp(ext, ".aac") == 0) {
+                snprintf(out_buf, out_size, "AAC");
+        } else if (strcasecmp(ext, ".mp4") == 0) {
+                snprintf(out_buf, out_size, "MP4");
+        } else if (strcasecmp(ext, ".opus") == 0) {
+                snprintf(out_buf, out_size, "OPUS");
+        } else if (strcasecmp(ext, ".ogg") == 0 || strcasecmp(ext, ".oga") == 0) {
+                snprintf(out_buf, out_size, "OGG");
+        } else if (strcasecmp(ext, ".wav") == 0) {
+                snprintf(out_buf, out_size, "WAV");
+        } else if (strcasecmp(ext, ".webm") == 0 || strcasecmp(ext, ".mka") == 0) {
+                snprintf(out_buf, out_size, "WEBM");
+        } else if (strcasecmp(ext, ".aiff") == 0 || strcasecmp(ext, ".aif") == 0) {
+                snprintf(out_buf, out_size, "AIFF");
+        } else {
+                char upper_ext[16] = {0};
+                size_t i = 0;
+                for (const char *p = ext + 1; *p && i < sizeof(upper_ext) - 1; p++, i++) {
+                        upper_ext[i] = (char)toupper((unsigned char)*p);
+                }
+                upper_ext[i] = '\0';
+                snprintf(out_buf, out_size, "%s", upper_ext);
+        }
+}
+
 ComponentMsg component_time_simple_and_vol(const Model *model, k_Rect region, DrawBuffer *buf, DirtyFlags dirty)
 {
         (void)dirty;
 
         const UISettings *ui = &model->state.settings;
+        SongData *songdata = model->songdata;
 
         double elapsed_seconds = model->elapsed_seconds;
         double total_seconds = model->song_duration;
@@ -2269,6 +2313,23 @@ ComponentMsg component_time_simple_and_vol(const Model *model, k_Rect region, Dr
                 pos += snprintf(line + pos, sizeof(line) - pos, "%d:%02d / %d:%02d Vol:%d%% (%d/%d)", em, es, tm, ts, vol, current, count);
         }
 
+        char format_str[16] = {0};
+        if (songdata && songdata->file_path[0] != '\0')
+                get_audio_format_str(songdata->file_path, format_str, sizeof(format_str));
+
+        int avg_bit_rate = songdata ? songdata->avg_bit_rate : 0;
+        if (avg_bit_rate <= 0 && songdata && songdata->duration > 0) {
+                avg_bit_rate = calc_avg_bit_rate(songdata->duration, songdata->file_path);
+        }
+
+        if (format_str[0] != '\0' && avg_bit_rate > 0) {
+                pos += snprintf(line + pos, sizeof(line) - pos, " %s %dkbps", format_str, avg_bit_rate);
+        } else if (format_str[0] != '\0') {
+                pos += snprintf(line + pos, sizeof(line) - pos, " %s", format_str);
+        } else if (avg_bit_rate > 0) {
+                pos += snprintf(line + pos, sizeof(line) - pos, " %dkbps", avg_bit_rate);
+        }
+
         CellStyle style = cell_style_from_theme(ui->theme.trackview_time);
         draw_buffer_set_string_truncated(buf, region.row, region.col, line, region.width, style);
 
@@ -2293,6 +2354,9 @@ ComponentMsg component_time(const Model *model, k_Rect region, DrawBuffer *buf, 
         double total_seconds = model->song_duration;
         int sample_rate = get_current_sample_rate();
         int avg_bit_rate = songdata ? songdata->avg_bit_rate : 0;
+        if (avg_bit_rate <= 0 && songdata && songdata->duration > 0) {
+                avg_bit_rate = calc_avg_bit_rate(songdata->duration, songdata->file_path);
+        }
         int vol = model->volume;
 
         char line[256];
@@ -2328,8 +2392,17 @@ ComponentMsg component_time(const Model *model, k_Rect region, DrawBuffer *buf, 
                                 em, es, tm, ts, pct, vol, current, count);
         }
 
+        // Format
+        char format_str[16] = {0};
+        if (songdata && songdata->file_path[0] != '\0')
+                get_audio_format_str(songdata->file_path, format_str, sizeof(format_str));
+
+        if (region.width > progress_width + 8 && format_str[0] != '\0') {
+                pos += snprintf(line + pos, sizeof(line) - pos, " %s", format_str);
+        }
+
         // Sample Rate
-        if (region.width > progress_width + 10) {
+        if (region.width > progress_width + 16 && sample_rate > 0) {
                 double rate = sample_rate / 1000.0;
                 if (rate == (int)rate)
                         pos += snprintf(line + pos, sizeof(line) - pos, " %dkHz", (int)rate);
@@ -2338,9 +2411,9 @@ ComponentMsg component_time(const Model *model, k_Rect region, DrawBuffer *buf, 
         }
 
         // Bit Rate
-        if (region.width > progress_width + 19) {
+        if (region.width > progress_width + 24) {
                 if (avg_bit_rate > 0)
-                        pos += snprintf(line + pos, sizeof(line) - pos, " %dkb/s", avg_bit_rate);
+                        pos += snprintf(line + pos, sizeof(line) - pos, " %dkbps", avg_bit_rate);
         }
 
         CellStyle style = cell_style_from_theme(ui->theme.trackview_time);

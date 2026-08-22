@@ -1,10 +1,10 @@
 #ifndef VERSION_H
 #define VERSION_H
 
-#define VER_FILEVERSION             2,0,3,0
-#define VER_PRODUCTVERSION          2,0,3,0
-#define FILE_VERSION                "2.0.3"
-#define PRODUCT_VERSION             "2.0.3"
+#define VER_FILEVERSION             2,0,6,0
+#define VER_PRODUCTVERSION          2,0,6,0
+#define FILE_VERSION                "2.0.6"
+#define PRODUCT_VERSION             "2.0.6"
 #define COMPANY_NAME                "SAGAR"
 #define FILE_DESCRIPTION            "SONORA Terminal Music Player"
 #define INTERNAL_NAME               "sonora"
